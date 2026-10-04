@@ -1,8 +1,11 @@
 use niri_ipc::ColumnDisplay;
 
-use crate::appearance::{BlockOutFrom, BorderRule, CornerRadius, ShadowRule, TabIndicatorRule};
+use crate::appearance::{
+    BackgroundEffect, BackgroundEffectRule, BlockOutFrom, BorderRule, CornerRadius, ShadowRule,
+    TabIndicatorRule,
+};
 use crate::layout::DefaultPresetSize;
-use crate::utils::RegexEq;
+use crate::utils::{MergeWith, RegexEq};
 use crate::FloatOrInt;
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
@@ -31,6 +34,8 @@ pub struct WindowRule {
     pub open_floating: Option<bool>,
     #[knuffel(child, unwrap(argument))]
     pub open_focused: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub on_xdg_activate: Option<OnXdgActivate>,
 
     // Rules applied dynamically.
     #[knuffel(child, unwrap(argument))]
@@ -71,7 +76,49 @@ pub struct WindowRule {
     #[knuffel(child, unwrap(argument))]
     pub scroll_factor: Option<FloatOrInt<0, 100>>,
     #[knuffel(child, unwrap(argument))]
+    pub pinch_sensitivity: Option<FloatOrInt<0, 100>>,
+    #[knuffel(child, unwrap(argument))]
     pub tiled_state: Option<bool>,
+    #[knuffel(child, default)]
+    pub background_effect: BackgroundEffectRule,
+    #[knuffel(child, default)]
+    pub popups: PopupsRule,
+}
+
+/// Rules for popup surfaces.
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
+pub struct PopupsRule {
+    #[knuffel(child, unwrap(argument))]
+    pub opacity: Option<f32>,
+    #[knuffel(child)]
+    pub geometry_corner_radius: Option<CornerRadius>,
+    #[knuffel(child, default)]
+    pub background_effect: BackgroundEffectRule,
+}
+
+/// Resolved popup-specific rules.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct ResolvedPopupsRules {
+    /// Extra opacity to draw popups with.
+    pub opacity: Option<f32>,
+
+    /// Corner radius to assume the popups have.
+    pub geometry_corner_radius: Option<CornerRadius>,
+
+    /// Background effect configuration for popups.
+    pub background_effect: BackgroundEffect,
+}
+
+impl MergeWith<PopupsRule> for ResolvedPopupsRules {
+    fn merge_with(&mut self, part: &PopupsRule) {
+        if let Some(x) = part.opacity {
+            self.opacity = Some(x);
+        }
+        if let Some(x) = part.geometry_corner_radius {
+            self.geometry_corner_radius = Some(x);
+        }
+        self.background_effect.merge_with(&part.background_effect);
+    }
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
@@ -104,6 +151,13 @@ pub struct FloatingPosition {
     pub y: FloatOrInt<-65535, 65535>,
     #[knuffel(property, default)]
     pub relative_to: RelativeTo,
+}
+
+#[derive(knuffel::DecodeScalar, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnXdgActivate {
+    Ignore,
+    SetUrgent,
+    Focus,
 }
 
 #[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]

@@ -221,6 +221,8 @@ pub struct Touchpad {
     pub middle_emulation: bool,
     #[knuffel(child)]
     pub scroll_factor: Option<ScrollFactor>,
+    #[knuffel(child, unwrap(argument))]
+    pub pinch_sensitivity: Option<FloatOrInt<0, 100>>,
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
@@ -363,6 +365,10 @@ pub struct Tablet {
     pub calibration_matrix: Option<Vec<f32>>,
     #[knuffel(child, unwrap(argument))]
     pub map_to_output: Option<String>,
+    #[knuffel(child)]
+    pub map_to_focused_output: bool,
+    #[knuffel(child)]
+    pub map_to_focused_window: bool,
     #[knuffel(child)]
     pub left_handed: bool,
 }

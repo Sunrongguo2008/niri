@@ -58,8 +58,10 @@ pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::utils::FloatOrInt;
-use crate::utils::{Flag, MergeWith as _};
-pub use crate::window_rule::{FloatingPosition, RelativeTo, WindowRule};
+use crate::utils::{expand_home_path, Flag, MergeWith as _};
+pub use crate::window_rule::{
+    FloatingPosition, OnXdgActivate, PopupsRule, RelativeTo, ResolvedPopupsRules, WindowRule,
+};
 pub use crate::workspace::{Workspace, WorkspaceLayoutPart};
 
 const RECURSION_LIMIT: u8 = 10;
@@ -78,6 +80,7 @@ pub struct Config {
     pub hotkey_overlay: HotkeyOverlay,
     pub config_notification: ConfigNotification,
     pub animations: Animations,
+    pub blur: Blur,
     pub gestures: Gestures,
     pub overview: Overview,
     pub environment: Environment,
@@ -114,8 +117,12 @@ pub enum ConfigPath {
 struct BasePath(PathBuf);
 struct RootBase(PathBuf);
 struct Recursion(u8);
+
+// FIXME: This is currently used to track all the files that needed to be watched. The name
+// `Includes` is not really correct and should be renamed in the future.
 #[derive(Default)]
 struct Includes(Vec<PathBuf>);
+
 #[derive(Default)]
 struct IncludeErrors(Vec<knuffel::Error>);
 // Used for recursive include detection.
@@ -194,6 +201,7 @@ where
                 "hotkey-overlay" => m_merge!(hotkey_overlay),
                 "config-notification" => m_merge!(config_notification),
                 "animations" => m_merge!(animations),
+                "blur" => m_merge!(blur),
                 "gestures" => m_merge!(gestures),
                 "overview" => m_merge!(overview),
                 "xwayland-satellite" => m_merge!(xwayland_satellite),
@@ -299,8 +307,6 @@ where
                             "additional argument for include path is required",
                         )
                     })?;
-                    let path: PathBuf = knuffel::traits::DecodeScalar::decode(path_val, ctx)?;
-
                     // Check for extra arguments
                     if let Some(val) = iter_args.next() {
                         ctx.emit_error(DecodeError::unexpected(
@@ -336,11 +342,15 @@ where
                         ));
                     }
 
-                    let base = ctx.get::<BasePath>().unwrap();
-                    let path = base.0.join(path);
-
                     // We use DecodeError::Missing throughout this block because it results in the
                     // least confusing error messages while still allowing to provide a span.
+
+                    let decoded_path = knuffel::traits::DecodeScalar::decode(path_val, ctx)?;
+
+                    // Expand ~ into the home dir
+                    let Some(path) = expand_home_path(decoded_path, node, ctx) else {
+                        continue;
+                    };
 
                     let recursion = ctx.get::<Recursion>().unwrap().0 + 1;
                     if recursion == RECURSION_LIMIT {
@@ -638,6 +648,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_on_xdg_activate() {
+        let parsed = do_parse(
+            r#"
+            window-rule { on-xdg-activate "ignore"; }
+            window-rule { on-xdg-activate "set-urgent"; }
+            window-rule { on-xdg-activate "focus"; }
+            "#,
+        );
+
+        assert_eq!(
+            parsed
+                .window_rules
+                .iter()
+                .map(|rule| rule.on_xdg_activate)
+                .collect::<Vec<_>>(),
+            vec![
+                Some(OnXdgActivate::Ignore),
+                Some(OnXdgActivate::SetUrgent),
+                Some(OnXdgActivate::Focus),
+            ]
+        );
+    }
+
+    #[test]
     fn parse() {
         let parsed = do_parse(
             r##"
@@ -666,6 +700,7 @@ mod tests {
                     tap-button-map "left-middle-right"
                     disabled-on-external-mouse
                     scroll-factor 0.9
+                    pinch-sensitivity 1.8
                 }
 
                 mouse {
@@ -701,6 +736,8 @@ mod tests {
 
                 tablet {
                     map-to-output "eDP-1"
+                    map-to-focused-output
+                    map-to-focused-window
                     calibration-matrix 1.0 2.0 3.0 \
                                        4.0 5.0 6.0
                 }
@@ -725,6 +762,7 @@ mod tests {
                 transform "flipped-90"
                 position x=10 y=20
                 mode "1920x1080@144"
+                max-bpc 10
                 variable-refresh-rate on-demand=true
                 background-color "rgba(25, 25, 102, 1.0)"
                 hot-corners {
@@ -837,7 +875,7 @@ mod tests {
                 window-open { off; }
 
                 window-close {
-                    curve "cubic-bezier" 0.05 0.7 0.1 1  
+                    curve "cubic-bezier" 0.05 0.7 0.1 1
                 }
 
                 recent-windows-close {
@@ -870,6 +908,7 @@ mod tests {
                 default-window-height { fixed 500; }
                 default-column-display "tabbed"
                 default-floating-position x=100 y=-200 relative-to="bottom-left"
+                on-xdg-activate "ignore"
 
                 focus-ring {
                     off
@@ -884,6 +923,8 @@ mod tests {
                 tab-indicator {
                     active-color "#f00"
                 }
+
+                pinch-sensitivity 1.2
             }
 
             layer-rule {
@@ -922,6 +963,7 @@ mod tests {
 
             workspace "workspace-1" {
                 open-on-output "eDP-1"
+                open-on-output "DP-1"
             }
             workspace "workspace-2"
             workspace "workspace-3"
@@ -1009,6 +1051,11 @@ mod tests {
                             vertical: None,
                         },
                     ),
+                    pinch_sensitivity: Some(
+                        FloatOrInt(
+                            1.8,
+                        ),
+                    ),
                 },
                 mouse: Mouse {
                     off: false,
@@ -1093,6 +1140,8 @@ mod tests {
                     map_to_output: Some(
                         "eDP-1",
                     ),
+                    map_to_focused_output: true,
+                    map_to_focused_window: true,
                     left_handed: false,
                 },
                 touch: Touch {
@@ -1137,6 +1186,11 @@ mod tests {
                                 x: 10,
                                 y: 20,
                             },
+                        ),
+                        max_bpc: Some(
+                            MaxBpc(
+                                _10,
+                            ),
                         ),
                         mode: Some(
                             Mode {
@@ -1183,6 +1237,7 @@ mod tests {
                         scale: None,
                         transform: Normal,
                         position: None,
+                        max_bpc: None,
                         mode: Some(
                             Mode {
                                 custom: true,
@@ -1209,6 +1264,7 @@ mod tests {
                         scale: None,
                         transform: Normal,
                         position: None,
+                        max_bpc: None,
                         mode: None,
                         modeline: Some(
                             Modeline {
@@ -1616,6 +1672,13 @@ mod tests {
                     },
                 ),
             },
+            blur: Blur {
+                off: false,
+                passes: 3,
+                offset: 3.0,
+                noise: 0.02,
+                saturation: 1.5,
+            },
             gestures: Gestures {
                 dnd_edge_view_scroll: DndEdgeViewScroll {
                     trigger_width: 10.0,
@@ -1763,6 +1826,9 @@ mod tests {
                     open_focused: Some(
                         true,
                     ),
+                    on_xdg_activate: Some(
+                        Ignore,
+                    ),
                     min_width: None,
                     min_height: None,
                     max_width: None,
@@ -1844,7 +1910,28 @@ mod tests {
                         },
                     ),
                     scroll_factor: None,
+                    pinch_sensitivity: Some(
+                        FloatOrInt(
+                            1.2,
+                        ),
+                    ),
                     tiled_state: None,
+                    background_effect: BackgroundEffectRule {
+                        xray: None,
+                        blur: None,
+                        noise: None,
+                        saturation: None,
+                    },
+                    popups: PopupsRule {
+                        opacity: None,
+                        geometry_corner_radius: None,
+                        background_effect: BackgroundEffectRule {
+                            xray: None,
+                            blur: None,
+                            noise: None,
+                            saturation: None,
+                        },
+                    },
                 },
             ],
             layer_rules: [
@@ -1859,6 +1946,7 @@ mod tests {
                                 ),
                             ),
                             at_startup: None,
+                            layer: None,
                         },
                     ],
                     excludes: [],
@@ -1879,6 +1967,22 @@ mod tests {
                     geometry_corner_radius: None,
                     place_within_backdrop: None,
                     baba_is_float: None,
+                    background_effect: BackgroundEffectRule {
+                        xray: None,
+                        blur: None,
+                        noise: None,
+                        saturation: None,
+                    },
+                    popups: PopupsRule {
+                        opacity: None,
+                        geometry_corner_radius: None,
+                        background_effect: BackgroundEffectRule {
+                            xray: None,
+                            blur: None,
+                            noise: None,
+                            saturation: None,
+                        },
+                    },
                 },
             ],
             binds: Binds(
@@ -2182,7 +2286,6 @@ mod tests {
                 enable_overlay_planes: false,
                 disable_cursor_plane: false,
                 disable_direct_scanout: false,
-                keep_max_bpc_unchanged: false,
                 restrict_primary_scanout_to_matching_format: false,
                 force_disable_connectors_on_resume: false,
                 render_drm_device: Some(
@@ -2193,6 +2296,7 @@ mod tests {
                     "/dev/dri/renderD130",
                 ],
                 force_pipewire_invalid_modifier: false,
+                disable_pipewire_dmabuf: false,
                 emulate_zero_presentation_time: false,
                 disable_resize_throttling: false,
                 disable_transactions: false,
@@ -2202,29 +2306,31 @@ mod tests {
                 honor_xdg_activation_with_invalid_serial: false,
                 deactivate_unfocused_windows: false,
                 skip_cursor_only_updates_during_vrr: false,
+                disable_10bit_output: false,
             },
             workspaces: [
                 Workspace {
                     name: WorkspaceName(
                         "workspace-1",
                     ),
-                    open_on_output: Some(
+                    open_on_output: [
                         "eDP-1",
-                    ),
+                        "DP-1",
+                    ],
                     layout: None,
                 },
                 Workspace {
                     name: WorkspaceName(
                         "workspace-2",
                     ),
-                    open_on_output: None,
+                    open_on_output: [],
                     layout: None,
                 },
                 Workspace {
                     name: WorkspaceName(
                         "workspace-3",
                     ),
-                    open_on_output: None,
+                    open_on_output: [],
                     layout: None,
                 },
             ],
